@@ -50,17 +50,33 @@ func (h *WebSocketHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close()
 		return
 	}
+
 	defer h.sessionManager.UnregisterWebSocket(sessionID, send)
+
+	// Keepalive: Ping client every 20s to prevent Cloudflare/Render edge proxies from terminating idle connections
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
 
 	go func() {
 		defer conn.Close()
-		for msg := range send {
-			payload, err := json.Marshal(msg)
-			if err != nil {
-				continue
-			}
-			if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
-				return
+		for {
+			select {
+			case msg, ok := <-send:
+				if !ok {
+					_ = conn.WriteMessage(websocket.CloseMessage, []byte{})
+					return
+				}
+				payload, err := json.Marshal(msg)
+				if err != nil {
+					continue
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+					return
+				}
+			case <-ticker.C:
+				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					return
+				}
 			}
 		}
 	}()
@@ -76,9 +92,10 @@ func (h *WebSocketHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := json.Unmarshal(message, &input); err != nil {
 			log.Printf("invalid websocket payload for session %s: %v", sessionID, err)
+			continue
 		}
-		log.Printf("ws message for session %s: type=%s len=%d", sessionID, input.Type, len(input.Payload))
-		if input.Type == "input" && r.URL.Query().Get("readonly") != "true" {
+		// log.Printf("ws message for session %s: type=%s len=%d", sessionID, input.Type, len(input.Payload))
+		if input.Type == "input" {
 			if err := h.sessionManager.HandleVMInput(sessionID, input.Payload); err != nil {
 				log.Printf("error handling vm input for session %s: %v", sessionID, err)
 			}
