@@ -30,7 +30,7 @@ var (
 type sessionRecord struct {
 	session      *storage.Session
 	vmManager    *vm.QEMUManager
-	webSocket    chan<- WebSocketMessage
+	webSockets   []chan<- WebSocketMessage
 	history      []byte
 	historyMu    sync.Mutex
 	outputBuffer strings.Builder
@@ -263,7 +263,7 @@ func (sm *SessionManager) EndSession(sessionID string) error {
 	now := time.Now().UTC()
 	record.session.Status = storage.SessionStatusStopped
 	record.session.StoppedAt = &now
-	record.webSocket = nil
+	record.webSockets = nil
 
 	// Remove persisted session metadata
 	if err := sm.deleteSessionFromDisk(sessionID); err != nil {
@@ -340,7 +340,7 @@ func (sm *SessionManager) RegisterWebSocket(sessionID string, ws chan<- WebSocke
 	}
 
 	sm.mu.Lock()
-	record.webSocket = ws
+	record.webSockets = append(record.webSockets, ws)
 	log.Printf("websocket registered for session %s", sessionID)
 	now := time.Now().UTC()
 	record.session.LastActivity = &now
@@ -354,6 +354,23 @@ func (sm *SessionManager) RegisterWebSocket(sessionID string, ws chan<- WebSocke
 		ws <- WebSocketMessage{Type: "vm_output", Payload: string(history)}
 	}
 	return nil
+}
+
+func (sm *SessionManager) UnregisterWebSocket(sessionID string, ws chan<- WebSocketMessage) {
+	record, err := sm.getRecord(sessionID)
+	if err != nil {
+		return
+	}
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	for i, sock := range record.webSockets {
+		if sock == ws {
+			record.webSockets = append(record.webSockets[:i], record.webSockets[i+1:]...)
+			log.Printf("websocket unregistered for session %s", sessionID)
+			break
+		}
+	}
 }
 
 func (sm *SessionManager) HandleVMInput(sessionID, input string) error {
@@ -522,20 +539,17 @@ func (sm *SessionManager) appendHistory(record *sessionRecord, outputBytes []byt
 }
 
 func (sm *SessionManager) pushOutput(record *sessionRecord, output string) {
-	record.historyMu.Lock()
-	ws := record.webSocket
-	record.historyMu.Unlock()
-	if ws == nil || output == "" {
-		if ws == nil {
-			log.Printf("no websocket for session %s; dropping %d bytes of output", record.session.ID, len(output))
-		}
+	sm.mu.RLock()
+	webSockets := append([]chan<- WebSocketMessage(nil), record.webSockets...)
+	sm.mu.RUnlock()
+	if len(webSockets) == 0 || output == "" {
 		return
 	}
-	// Send output to websocket channel and log size.
-	ws <- WebSocketMessage{Type: "vm_output", Payload: output}
-	// log.Printf("pushed %d bytes of vm_output to session %s websocket", len(output), record.session.ID)
 
-	// Update last activity when we push output to a connected client.
+	for _, ws := range webSockets {
+		ws <- WebSocketMessage{Type: "vm_output", Payload: output}
+	}
+
 	now := time.Now().UTC()
 	record.session.LastActivity = &now
 	if err := sm.saveSessionToDisk(record.session); err != nil {
@@ -544,10 +558,10 @@ func (sm *SessionManager) pushOutput(record *sessionRecord, output string) {
 }
 
 func (sm *SessionManager) signalSessionError(record *sessionRecord, message string) {
-	record.historyMu.Lock()
-	ws := record.webSocket
-	record.historyMu.Unlock()
-	if ws != nil {
+	sm.mu.RLock()
+	webSockets := append([]chan<- WebSocketMessage(nil), record.webSockets...)
+	sm.mu.RUnlock()
+	for _, ws := range webSockets {
 		ws <- WebSocketMessage{Type: "error", Payload: message}
 	}
 }
@@ -806,10 +820,10 @@ func (sm *SessionManager) onSolved(record *sessionRecord, when time.Time, challe
 		}
 	}
 
-	record.historyMu.Lock()
-	ws := record.webSocket
-	record.historyMu.Unlock()
-	if ws != nil {
+	sm.mu.RLock()
+	webSockets := append([]chan<- WebSocketMessage(nil), record.webSockets...)
+	sm.mu.RUnlock()
+	for _, ws := range webSockets {
 		ws <- WebSocketMessage{Type: "flag_found", Payload: map[string]string{"challenge_id": challengeID}}
 	}
 	return true

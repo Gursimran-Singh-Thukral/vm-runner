@@ -50,6 +50,7 @@ func (h *WebSocketHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close()
 		return
 	}
+	defer h.sessionManager.UnregisterWebSocket(sessionID, send)
 
 	go func() {
 		defer conn.Close()
@@ -77,7 +78,7 @@ func (h *WebSocketHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
 			log.Printf("invalid websocket payload for session %s: %v", sessionID, err)
 		}
 		log.Printf("ws message for session %s: type=%s len=%d", sessionID, input.Type, len(input.Payload))
-		if input.Type == "input" {
+		if input.Type == "input" && r.URL.Query().Get("readonly") != "true" {
 			if err := h.sessionManager.HandleVMInput(sessionID, input.Payload); err != nil {
 				log.Printf("error handling vm input for session %s: %v", sessionID, err)
 			}
