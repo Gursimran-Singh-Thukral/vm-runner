@@ -52,9 +52,12 @@ func (qm *QEMUManager) Start() error {
 		commonArgs = append(commonArgs, "-smp", fmt.Sprintf("%d", qm.Config.CPUs))
 	}
 	if runtime.GOOS != "windows" {
-		commonArgs = append(commonArgs, "-cpu", "host")
-		if _, err := exec.LookPath("qemu-system-x86_64"); err == nil {
-			commonArgs = append(commonArgs, "-enable-kvm")
+		if _, err := os.Stat("/dev/kvm"); err == nil {
+			commonArgs = append(commonArgs, "-enable-kvm", "-cpu", "host")
+		} else {
+			// In container environments without nested virtualization (e.g. Render, Railway),
+			// fall back to TCG software emulation
+			commonArgs = append(commonArgs, "-accel", "tcg")
 		}
 	} else {
 		// on Windows, prefer WHPX hardware acceleration for fast boots, but fallback to TCG
