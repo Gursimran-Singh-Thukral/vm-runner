@@ -30,8 +30,11 @@ COPY --from=builder /app/vm-runner-server .
 # Copy the web directory since the server serves static files from ./web
 COPY --from=builder /app/web ./web
 
-# Copy the initial data directory if needed (or rely on persistent disk)
-# COPY --from=builder /app/data ./data
+# Copy the initial data directory (CTF JSON configs)
+COPY --from=builder /app/data ./data
+
+# Copy ISOs
+COPY --from=builder /app/isos ./isos
 
 # Expose the web server port
 EXPOSE 8080

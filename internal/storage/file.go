@@ -637,6 +637,9 @@ func (s *FileStore) readCTF(path string) (CTF, error) {
 	if err := json.Unmarshal(data, &ctf); err != nil {
 		return ctf, fmt.Errorf("failed to unmarshal ctf file %s: %w", path, err)
 	}
+	if ctf.VMConfig.ImagePath != "" {
+		ctf.VMConfig.ImagePath = s.resolveImagePath(path, ctf.VMConfig.ImagePath)
+	}
 	for i := range ctf.Challenges {
 		ctf.Challenges[i].CTFID = ctf.ID
 		// If the challenge does not specify an image path, fall back to the CTF-level vm_config
@@ -701,6 +704,9 @@ func (s *FileStore) resolveImagePath(configPath, imagePath string) string {
 		return imagePath
 	}
 	if _, err := os.Stat(imagePath); err == nil {
+		if abs, err := filepath.Abs(imagePath); err == nil {
+			return abs
+		}
 		return imagePath
 	}
 	base := filepath.Dir(configPath)
@@ -711,6 +717,9 @@ func (s *FileStore) resolveImagePath(configPath, imagePath string) string {
 	}
 	for _, candidate := range candidates {
 		if _, err := os.Stat(candidate); err == nil {
+			if abs, err := filepath.Abs(candidate); err == nil {
+				return abs
+			}
 			return candidate
 		}
 	}
