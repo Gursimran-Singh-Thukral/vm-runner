@@ -2,7 +2,6 @@
 bin/
 .env
 /images
-*.iso
 *.qcow2
 vmrunner
 *.exe
