@@ -45,6 +45,19 @@ func (h *WebSocketHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("websocket connection established for session %s from %s", sessionID, r.RemoteAddr)
+
+	// Keepalive: ping every 20 s to prevent Render/Cloudflare edge proxies from
+	// killing idle connections during the ~60 s silent QEMU TCG boot phase.
+	const pingInterval = 20 * time.Second
+	const pongTimeout = 30 * time.Second // must be > pingInterval
+
+	// Reset the read deadline each time we receive a Pong from the client.
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(pongTimeout))
+	})
+	// Initial read deadline – the client must respond to the first ping within pongTimeout.
+	_ = conn.SetReadDeadline(time.Now().Add(pongTimeout))
+
 	send := make(chan service.WebSocketMessage, 256)
 	if err := h.sessionManager.RegisterWebSocket(sessionID, send); err != nil {
 		_ = conn.Close()
@@ -53,8 +66,7 @@ func (h *WebSocketHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
 
 	defer h.sessionManager.UnregisterWebSocket(sessionID, send)
 
-	// Keepalive: Ping client every 20s to prevent Cloudflare/Render edge proxies from terminating idle connections
-	ticker := time.NewTicker(20 * time.Second)
+	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
 
 	go func() {
@@ -74,7 +86,8 @@ func (h *WebSocketHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			case <-ticker.C:
-				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				// WriteControl is the correct API for control frames (ping/pong/close).
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
 					return
 				}
 			}
@@ -102,6 +115,7 @@ func (h *WebSocketHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
 
 func (h *WebSocketHandler) ServeVNC(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimPrefix(r.URL.Path, "/vnc/session/")
