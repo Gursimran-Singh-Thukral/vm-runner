@@ -75,9 +75,8 @@ func (h *WebSocketHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := json.Unmarshal(message, &input); err != nil {
 			log.Printf("invalid websocket payload for session %s: %v", sessionID, err)
-			continue
 		}
-		// log.Printf("ws message for session %s: type=%s len=%d", sessionID, input.Type, len(input.Payload))
+		log.Printf("ws message for session %s: type=%s len=%d", sessionID, input.Type, len(input.Payload))
 		if input.Type == "input" {
 			if err := h.sessionManager.HandleVMInput(sessionID, input.Payload); err != nil {
 				log.Printf("error handling vm input for session %s: %v", sessionID, err)

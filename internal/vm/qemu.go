@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -23,7 +24,7 @@ type QEMUManager struct {
 	RuntimeDir  string
 	overlayPath string
 	Cmd         *exec.Cmd
-	PTY         *os.File
+	PTY io.ReadWriteCloser
 	OutputChan  chan []byte
 	ErrorChan   chan error
 	stopChan    chan struct{}
@@ -50,11 +51,17 @@ func (qm *QEMUManager) Start() error {
 	if qm.Config.CPUs > 0 {
 		commonArgs = append(commonArgs, "-smp", fmt.Sprintf("%d", qm.Config.CPUs))
 	}
-	commonArgs = append(commonArgs, "-cpu", "host")
-	if _, err := exec.LookPath("qemu-system-x86_64"); err == nil {
-		commonArgs = append(commonArgs, "-enable-kvm")
+	if runtime.GOOS != "windows" {
+		commonArgs = append(commonArgs, "-cpu", "host")
+		if _, err := exec.LookPath("qemu-system-x86_64"); err == nil {
+			commonArgs = append(commonArgs, "-enable-kvm")
+		}
+	} else {
+		// on Windows, prefer WHPX hardware acceleration for fast boots, but fallback to TCG
+		commonArgs = append(commonArgs, "-accel", "whpx", "-accel", "tcg")
 	}
 
+	var winSerialPort int
 	if qm.Config.DisplayType == "vnc" {
 		vncPort, wsPort, err := qm.findFreePorts()
 		if err != nil {
@@ -66,15 +73,25 @@ func (qm *QEMUManager) Start() error {
 		commonArgs = append(commonArgs,
 			"-vnc", fmt.Sprintf(":%d,websocket=%d", vncDisplay, wsPort),
 			"-vga", "std",
-			"-serial", "mon:stdio",
 			"-usb",
 			"-device", "usb-tablet", // Absolute pointer for perfect mouse sync
 			"-device", "virtio-serial-pci",
 			"-device", "virtserialport,chardev=ch0,name=com.redhat.spice.0",
 			"-chardev", "qemu-vdagent,id=ch0,name=vdagent,clipboard=on",
 		)
+		if runtime.GOOS == "windows" {
+			winSerialPort, _ = qm.findSingleFreePort()
+			commonArgs = append(commonArgs, "-serial", fmt.Sprintf("tcp:127.0.0.1:%d,server,nowait", winSerialPort))
+		} else {
+			commonArgs = append(commonArgs, "-serial", "mon:stdio")
+		}
 	} else {
-		commonArgs = append(commonArgs, "-nographic", "-serial", "mon:stdio")
+		if runtime.GOOS == "windows" {
+			winSerialPort, _ = qm.findSingleFreePort()
+			commonArgs = append(commonArgs, "-display", "none", "-serial", fmt.Sprintf("tcp:127.0.0.1:%d,server,nowait", winSerialPort))
+		} else {
+			commonArgs = append(commonArgs, "-nographic", "-serial", "mon:stdio")
+		}
 	}
 
 	args := append([]string{}, commonArgs...)
@@ -95,18 +112,39 @@ func (qm *QEMUManager) Start() error {
 	}
 	// If a runtime directory is provided, expose it to the guest via 9p/virtfs
 	// so the guest can read the session seed (mounted by the guest at boot).
-	if qm.RuntimeDir != "" {
+	if qm.RuntimeDir != "" && runtime.GOOS != "windows" {
 		args = append(args, "-virtfs", fmt.Sprintf("local,path=%s,mount_tag=vmrunner,security_model=none,id=vmrun0", qm.RuntimeDir))
 	}
-	qm.Cmd = exec.Command("qemu-system-x86_64", args...)
-	log.Println("starting qemu with args:", qm.Cmd.Args)
-	// Create a pty for the QEMU process so the guest sees a real tty.
-	ptmx, err := pty.Start(qm.Cmd)
-	if err != nil {
-		log.Printf("failed to start qemu with pty: %v", err)
-		return fmt.Errorf("failed to start qemu with pty: %w", err)
+	qemuExe := "qemu-system-x86_64"
+	if runtime.GOOS == "windows" {
+		if _, err := exec.LookPath(qemuExe); err != nil {
+			if _, err := os.Stat(`C:\Program Files\qemu\qemu-system-x86_64.exe`); err == nil {
+				qemuExe = `C:\Program Files\qemu\qemu-system-x86_64.exe`
+			}
+		}
 	}
-	qm.PTY = ptmx
+	qm.Cmd = exec.Command(qemuExe, args...)
+	log.Println("starting qemu with args:", qm.Cmd.Args)
+	if runtime.GOOS == "windows" {
+		if err := qm.Cmd.Start(); err != nil {
+			return fmt.Errorf("failed to start qemu: %w", err)
+		}
+		// Connect to the TCP serial port
+		conn, err := connectWithRetry(fmt.Sprintf("127.0.0.1:%d", winSerialPort), 20, 100*time.Millisecond)
+		if err != nil {
+			_ = qm.Cmd.Process.Kill()
+			return fmt.Errorf("failed to connect to qemu serial: %w", err)
+		}
+		qm.PTY = conn
+	} else {
+		// Create a pty for the QEMU process so the guest sees a real tty.
+		ptmx, err := pty.Start(qm.Cmd)
+		if err != nil {
+			log.Printf("failed to start qemu with pty: %v", err)
+			return fmt.Errorf("failed to start qemu with pty: %w", err)
+		}
+		qm.PTY = ptmx
+	}
 
 	// Open a log file in the runtime dir to persist VM output (helps debug
 	// immediate exits). streamOutput will append to this file.
@@ -257,10 +295,18 @@ func (qm *QEMUManager) createOverlay() error {
 		return nil
 	}
 	_ = os.MkdirAll(qm.RuntimeDir, 0o755)
-	cmd := exec.Command("qemu-img", "create", "-f", "qcow2", "-b", qm.Config.ImagePath, "-B", qm.driveFormat(), qm.overlayPath)
+	qemuImg := "qemu-img"
+	if runtime.GOOS == "windows" {
+		if _, err := exec.LookPath(qemuImg); err != nil {
+			if _, err := os.Stat(`C:\Program Files\qemu\qemu-img.exe`); err == nil {
+				qemuImg = `C:\Program Files\qemu\qemu-img.exe`
+			}
+		}
+	}
+	cmd := exec.Command(qemuImg, "create", "-f", "qcow2", "-b", qm.Config.ImagePath, "-B", qm.driveFormat(), qm.overlayPath)
 	if err := cmd.Run(); err != nil {
 		// QEMU <= 10.0 used -F for the backing format; QEMU 10.1+ uses -B.
-		cmd = exec.Command("qemu-img", "create", "-f", "qcow2", "-b", qm.Config.ImagePath, "-F", qm.driveFormat(), qm.overlayPath)
+		cmd = exec.Command(qemuImg, "create", "-f", "qcow2", "-b", qm.Config.ImagePath, "-F", qm.driveFormat(), qm.overlayPath)
 		return cmd.Run()
 	}
 	return nil
@@ -301,3 +347,26 @@ func (qm *QEMUManager) isPortAvailable(port int) bool {
 	_ = ln.Close()
 	return true
 }
+
+func (qm *QEMUManager) findSingleFreePort() (int, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	return port, nil
+}
+
+func connectWithRetry(addr string, retries int, delay time.Duration) (net.Conn, error) {
+	for i := 0; i < retries; i++ {
+		conn, err := net.Dial("tcp", addr)
+		if err == nil {
+			return conn, nil
+		}
+		time.Sleep(delay)
+	}
+	return nil, fmt.Errorf("connection timed out")
+}
+
+

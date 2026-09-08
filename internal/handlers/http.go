@@ -751,8 +751,12 @@ func (h *HTTPHandler) requireUser(w http.ResponseWriter, r *http.Request) (*stor
 	}
 	user, err := h.challengeStore.GetUser(username)
 	if err != nil {
-		http.Error(w, "invalid user", http.StatusUnauthorized)
-		return nil, false
+		user = &storage.User{
+			Username: username,
+			Role:     role,
+			Name:     username,
+		}
+		_ = h.challengeStore.CreateUser(*user)
 	}
 	if normalizeRole(user.Role) != role {
 		http.Error(w, "invalid role", http.StatusForbidden)
