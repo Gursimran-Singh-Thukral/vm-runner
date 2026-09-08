@@ -12,8 +12,7 @@
     "cpus": 2,
     "architecture": "x86_64",
     "timeout_seconds": 1800,
-    "display_type": "terminal",
-    "boot_args": "console=ttyS0,115200 modules=loop,squashfs,sd-mod,usb-storage quiet"
+    "display_type": "terminal"
   },
   "challenges": [
     {

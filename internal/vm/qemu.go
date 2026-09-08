@@ -117,11 +117,6 @@ func (qm *QEMUManager) Start() error {
 			args = append(args, "-hda", imageArg)
 		}
 	}
-	// Pass boot args directly to the kernel (bypasses the ISOLINUX interactive menu
-	// and its 5-second countdown, shaving ~5-10s off every boot).
-	if qm.Config.BootArgs != "" {
-		args = append(args, "-append", qm.Config.BootArgs)
-	}
 
 	// If a runtime directory is provided, expose it to the guest via 9p/virtfs
 	// so the guest can read the session seed (mounted by the guest at boot).
