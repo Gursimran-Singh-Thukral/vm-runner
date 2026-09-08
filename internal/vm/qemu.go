@@ -56,12 +56,9 @@ func (qm *QEMUManager) Start() error {
 			commonArgs = append(commonArgs, "-enable-kvm", "-cpu", "host")
 		} else {
 			// Container environments (Render, Railway, etc.) have no nested virt.
-			// Multi-threaded TCG + -cpu max is significantly faster than the default
-			// single-threaded interpreter – cuts Alpine boot from ~3 min to ~60 s.
-			commonArgs = append(commonArgs,
-				"-accel", "tcg,thread=multi",
-				"-cpu", "max",
-			)
+			// Multi-threaded TCG is significantly faster than the default single-threaded
+			// interpreter – cuts Alpine boot from ~3 min to ~90 s.
+			commonArgs = append(commonArgs, "-accel", "tcg,thread=multi")
 		}
 	} else {
 		// on Windows, prefer WHPX hardware acceleration for fast boots, but fallback to TCG
