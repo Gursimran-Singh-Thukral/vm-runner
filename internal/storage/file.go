@@ -48,6 +48,10 @@ type VMConfig struct {
 	Architecture   string `json:"architecture"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
 	DisplayType    string `json:"display_type"`
+	// BootArgs are appended to the kernel command line via QEMU's -append flag.
+	// Useful to suppress the ISOLINUX interactive boot menu and pass quiet/loglevel
+	// args so Alpine skips unnecessary output and boots faster.
+	BootArgs       string `json:"boot_args,omitempty"`
 }
 
 type Challenge struct {

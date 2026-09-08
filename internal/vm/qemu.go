@@ -55,9 +55,13 @@ func (qm *QEMUManager) Start() error {
 		if _, err := os.Stat("/dev/kvm"); err == nil {
 			commonArgs = append(commonArgs, "-enable-kvm", "-cpu", "host")
 		} else {
-			// In container environments without nested virtualization (e.g. Render, Railway),
-			// fall back to TCG software emulation
-			commonArgs = append(commonArgs, "-accel", "tcg")
+			// Container environments (Render, Railway, etc.) have no nested virt.
+			// Multi-threaded TCG + -cpu max is significantly faster than the default
+			// single-threaded interpreter – cuts Alpine boot from ~3 min to ~60 s.
+			commonArgs = append(commonArgs,
+				"-accel", "tcg,thread=multi",
+				"-cpu", "max",
+			)
 		}
 	} else {
 		// on Windows, prefer WHPX hardware acceleration for fast boots, but fallback to TCG
@@ -113,6 +117,12 @@ func (qm *QEMUManager) Start() error {
 			args = append(args, "-hda", imageArg)
 		}
 	}
+	// Pass boot args directly to the kernel (bypasses the ISOLINUX interactive menu
+	// and its 5-second countdown, shaving ~5-10s off every boot).
+	if qm.Config.BootArgs != "" {
+		args = append(args, "-append", qm.Config.BootArgs)
+	}
+
 	// If a runtime directory is provided, expose it to the guest via 9p/virtfs
 	// so the guest can read the session seed (mounted by the guest at boot).
 	if qm.RuntimeDir != "" && runtime.GOOS != "windows" {
