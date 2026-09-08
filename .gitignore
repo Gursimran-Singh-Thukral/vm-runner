@@ -5,3 +5,4 @@ bin/
 *.iso
 *.qcow2
 vmrunner
+*.exe

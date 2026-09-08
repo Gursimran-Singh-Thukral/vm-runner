@@ -1,6 +1,6 @@
 module vm-runner
 
-go 1.25.7
+go 1.22
 
 require (
 	github.com/creack/pty v1.1.18
